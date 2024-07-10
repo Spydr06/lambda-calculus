@@ -1,0 +1,33 @@
+let(primitive) true = λx.λy.x;
+let(primitive) false = λx.λy.y;
+
+let and = λp.λq.p q p;
+let or = λp.λq.p p q;
+
+let not = λp.p false true;
+
+let ifThenElse = λp.λa.λb.p a b;
+let isZero = λn.n (λx.false) true;
+
+let pair = λx.λy.λf.f x y;
+
+let first = λp.p true;
+let second = λp.p false;
+
+let nil = λx.true;
+let null = λp.p (λx.λy.false);
+
+let succ = λn.λf.λx.f (n f x);
+let plus = λm.λn.λf.λx.m f (n f x);
+
+let I = λx.x;
+let S = λx.λy.λz.x z (y z);
+let K = λx.λy.x;
+let B = λx.λy.λz.x (y z);
+let C = λx.λy.λz.x z y;
+let W = λx.λy.x y y;
+let Y = λg.(λx.g (x x)) (λx.g (x x));
+let Δ = λx.x x;
+let Ω = Δ Δ;
+
+succ 2
