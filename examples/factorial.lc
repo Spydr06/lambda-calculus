@@ -1,0 +1,7 @@
+include "../prelude.lc"
+
+let H = (λf.λn.(isZero n) 1 (mult n (f (pred n))));
+let factorial = Y H;
+
+leq (factorial 4) 24
+

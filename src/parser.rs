@@ -1,10 +1,12 @@
-use std::{collections::{hash_map, HashMap}, iter::Peekable};
+use std::{collections::{hash_map, HashMap}, fs::File, io::Read, iter::Peekable, path::PathBuf};
 
 use crate::{Binding, Declaration, Expr};
 
 #[derive(PartialEq, Eq, Debug, Default, Clone)]
 pub enum Token {
     Identifier(String),
+    String(String),
+    Include,
     Lambda,
     Let,
     Primitive,
@@ -23,6 +25,7 @@ thread_local! {
     pub static KEYWORDS: HashMap<&'static str, Token> = HashMap::from([
             ("=", Token::Assign),
             ("let", Token::Let),
+            ("include", Token::Include),
             ("primitive", Token::Primitive),
         ]);
 }
@@ -45,6 +48,8 @@ impl Token {
             '(' => Self::LeftParen,
             ')' => Self::RightParen,
             '\0' => Self::Eof, 
+            '\'' => Self::String(input.take_while(|ch| *ch != '\'').collect()),
+            '\"' => Self::String(input.take_while(|ch| *ch != '\"').collect()),
             ch if char_is_ident(ch) => {
                 let mut ident = String::new();
                 ident.push(ch);
@@ -77,6 +82,13 @@ pub enum ParseError {
     UnexpectedToken(Token, String),
     UnexpectedEof,
     Redefinition(String),
+    IncludedFile(std::io::Error)
+}
+
+impl From<std::io::Error> for ParseError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IncludedFile(value)
+    }
 }
 
 impl From<hash_map::OccupiedError<'_, String, Binding>> for ParseError {
@@ -85,28 +97,35 @@ impl From<hash_map::OccupiedError<'_, String, Binding>> for ParseError {
     }
 }
 
-pub struct Parser<'t> {
-    tokens: Peekable<&'t mut dyn Iterator<Item = Token>>,
+pub struct Parser {
+    tokens: Vec<Token>,
+    origin_path: Option<std::path::PathBuf>,
 }
 
-impl Parser<'_> {
+impl Parser {
+    pub fn set_path(&mut self, path: std::path::PathBuf) {
+        self.origin_path = Some(path)
+    }
+    
     pub fn parse(&mut self, declarations: &mut HashMap<String, Binding>) -> Result<Vec<Expr>, ParseError> {
         let mut exprs = vec![];
-        while let Some(token) = self.tokens.peek() {
+        while let Some(token) = self.peek() {
             match token {
                 Token::Let => {
                     let (ident, expr) = self.parse_let_binding()?;
                     declarations.try_insert(ident.to_string(), expr)?;
                 }
+                Token::Include => self.expand_include()?,
                 _ => exprs.push(self.parse_expr()?)
             }
         }
+
 
         Ok(exprs) 
     }
     
     fn expect_ident(&mut self) -> Result<String, ParseError> {
-        self.tokens.next().map(|tok| {
+        self.next().map(|tok| {
             if let Token::Identifier(ident) = tok {
                 Ok(ident)
             }
@@ -116,9 +135,34 @@ impl Parser<'_> {
         }).ok_or(ParseError::UnexpectedEof)
             .flatten()
     }
+    
+    fn expect_string(&mut self) -> Result<String, ParseError> {
+        self.next().map(|tok| {
+            if let Token::String(string) = tok {
+                Ok(string)
+            }
+            else {
+                Err(ParseError::UnexpectedToken(tok, "string".to_string()))
+            }
+        }).ok_or(ParseError::UnexpectedEof)
+            .flatten()
+    }
+
+    fn peek(&mut self) -> Option<&Token> {
+        self.tokens.first()
+    }
+
+    fn next(&mut self) -> Option<Token> {
+        if self.tokens.len() > 0 {
+            Some(self.tokens.remove(0))
+        }
+        else {
+            None
+        }
+    }
 
     fn expect(&mut self, expect: Token) -> Result<(), ParseError> {
-        self.tokens.next()
+        self.next()
             .map(|next| (next == expect)
                 .then_some(())
                 .ok_or_else(|| ParseError::UnexpectedToken(next, format!("token `{expect:?}`")))
@@ -130,9 +174,9 @@ impl Parser<'_> {
     fn parse_let_binding(&mut self) -> Result<Declaration, ParseError> {
         self.expect(Token::Let)?;
 
-        let primitive = self.tokens.peek() == Some(&Token::LeftParen);
+        let primitive = self.peek() == Some(&Token::LeftParen);
         if primitive {
-            self.tokens.next();
+            self.next();
             self.expect(Token::Primitive)?;
             self.expect(Token::RightParen)?;
         }
@@ -146,7 +190,7 @@ impl Parser<'_> {
     }
 
     fn parse_basic_expr(&mut self) -> Result<Expr, ParseError> {
-        match self.tokens.next().unwrap_or_default() {
+        match self.next().unwrap_or_default() {
             Token::Identifier(ident) => Ok(Expr::Variable(ident)),
             Token::Lambda => {
                 let argument = self.expect_ident()?;
@@ -167,7 +211,7 @@ impl Parser<'_> {
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_basic_expr()?;
 
-        while let Some(next) = self.tokens.peek() && next.starts_expr() {
+        while let Some(next) = self.peek() && next.starts_expr() {
             expr = Expr::Application(
                 Box::new(expr),
                 Box::new(self.parse_basic_expr()?),
@@ -176,12 +220,32 @@ impl Parser<'_> {
 
         Ok(expr)
     }
+
+    fn expand_include(&mut self) -> Result<(), ParseError> {
+        self.expect(Token::Include)?;
+        let include_path = self.expect_string()?;
+
+        let mut path = self.origin_path.to_owned().unwrap_or_else(|| PathBuf::new());
+        path.push(include_path);
+
+        let mut file = File::open(path)?;
+        let mut source = String::new();
+        file.read_to_string(&mut source)?;
+
+        let tokens = std::mem::replace(&mut self.tokens, vec![]);
+        let mut new = Token::lex(source.chars()).collect::<Vec<_>>();
+        new.extend(tokens);
+        self.tokens = new;
+        
+        Ok(())
+    }
 }
 
-impl<'t> From<&'t mut dyn Iterator<Item = Token>> for Parser<'t> {
-    fn from(tokens: &'t mut dyn Iterator<Item = Token>) -> Self {
+impl From<&mut dyn Iterator<Item = Token>> for Parser {
+    fn from(tokens: &mut dyn Iterator<Item = Token>) -> Self {
         Self {
-            tokens: tokens.peekable(),
+            tokens: tokens.collect(),
+            origin_path: None,
         }
     }
 }

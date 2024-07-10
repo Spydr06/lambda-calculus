@@ -3,7 +3,7 @@
 #![feature(let_chains)]
 #![feature(if_let_guard)]
 
-use std::{collections::HashMap, fmt, fs::File, io::Read, panic::RefUnwindSafe};
+use std::{collections::HashMap, fmt, fs::File, io::Read, path::PathBuf};
 
 use parser::*;
 
@@ -60,8 +60,6 @@ impl Scope {
 
 #[derive(Debug)]
 enum RuntimeError {
-    UnboundIdentifier(String),
-    IllegalApplication(Expr, Expr),
     NotApplication,
     NotFunction
 }
@@ -69,17 +67,10 @@ enum RuntimeError {
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnboundIdentifier(ref binding) => write!(f, "unbound identifier `{binding}`"),
-            Self::IllegalApplication(a, b) => write!(f, "illegal application: `{a:?} {b:?}`"),
             Self::NotApplication => write!(f, "not an application"),
             Self::NotFunction => write!(f, "not a function"),
         }
     }
-}
-
-enum Order {
-    Normal,
-    CallByName
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,49 +81,18 @@ enum Expr {
 }
 
 impl Expr {
-    /*fn beta_reduce(self) -> Result<Self, RuntimeError> {
-        match self {
-            Self::Application(left, right) => {
-                let left = left.beta_reduce()?;
-                let right = right.beta_reduce()?;
-                
-                match left {
-                    Self::Function(ref arg, body) => body.substitute(arg, right).beta_reduce(),
-                    _ => Err(RuntimeError::IllegalApplication(left, right))
-                } 
-            }
-            Self::Variable(ident) => Err(RuntimeError::UnboundIdentifier(ident)),
-            _ => Ok(self)
-        }
-    }*/
-
-    fn beta_reduce(&mut self, order: Order, limit: usize) -> Result<usize, RuntimeError> {
-        let mut count = 0;
-
-        match order {
-            Order::Normal => self.beta_normal(limit, &mut count)?,
-            Order::CallByName => self.beta_cbn(limit, &mut count)?
-        }
-
-        Ok(count)
-    }
-
-    fn beta_normal(&mut self, limit: usize, count: &mut usize) -> Result<(), RuntimeError> {
-        if limit != 0 && *count == limit {
-            return Ok(())
-        }
-
+    fn beta_reduce(&mut self) -> Result<(), RuntimeError> {
         match *self {
             Self::Application(_, _) => {
-                self.lhs_mut()?.beta_cbn(limit, count)?;
+                self.lhs_mut()?.beta_reduce()?;
 
-                if self.is_reducible(limit, *count) {
+                if self.is_reducible() {
                     self.apply()?;
-                    self.beta_normal(limit, count)?;
+                    self.beta_reduce()?;
                 }
                 else {
-                    self.lhs_mut()?.beta_normal(limit, count)?;
-                    self.rhs_mut()?.beta_normal(limit, count)?;
+                    self.lhs_mut()?.beta_reduce()?;
+                    self.rhs_mut()?.beta_reduce()?;
                 }
             }
             _ => (),
@@ -140,29 +100,12 @@ impl Expr {
 
         Ok(())
     }
-    
-    fn beta_cbn(&mut self, limit: usize, count: &mut usize) -> Result<(), RuntimeError> {
-        if limit != 0 && *count == limit {
-            return Ok(())
-        }
-
-        if let Self::Application(_, _) = self {
-            self.lhs_mut()?.beta_cbn(limit, count)?;
-            
-            if self.is_reducible(limit, *count) {
-                self.apply()?;
-                self.beta_cbn(limit, count)?;
-            }
-        }
-
-        Ok(()) 
-    }
 
     fn apply(&mut self) -> Result<(), RuntimeError> {
         let to_apply = std::mem::replace(self, Self::Variable("".to_string()));
-        let (lhs, rhs) = to_apply.unapp()?;
+        let (lhs, rhs) = to_apply.as_application()?;
         
-        let (arg, mut body) = lhs.unabs()?;
+        let (arg, mut body) = lhs.as_function()?;
         body.substitute(arg, *rhs);
 
         *self = *body;
@@ -196,22 +139,22 @@ impl Expr {
     }
 
     fn rhs_mut(&mut self) -> Result<&mut Expr, RuntimeError> {
-        self.unapp_mut().map(|(_, rhs)| rhs)
+        self.as_application_mut().map(|(_, rhs)| rhs)
     }
 
     fn rhs(&self) -> Result<&Expr, RuntimeError> {
-        self.unapp_ref().map(|(_, rhs)| rhs)
+        self.as_application_ref().map(|(_, rhs)| rhs)
     }
 
     fn lhs_mut(&mut self) -> Result<&mut Expr, RuntimeError> {
-        self.unapp_mut().map(|(lhs, _)| lhs)
+        self.as_application_mut().map(|(lhs, _)| lhs)
     }
 
     fn lhs(&self) -> Result<&Expr, RuntimeError> {
-        self.unapp_ref().map(|(lhs, _)| lhs)
+        self.as_application_ref().map(|(lhs, _)| lhs)
     }
 
-    fn unapp_mut(&mut self) -> Result<(&mut Expr, &mut Expr), RuntimeError> {
+    fn as_application_mut(&mut self) -> Result<(&mut Expr, &mut Expr), RuntimeError> {
         if let Self::Application(ref mut lhs, ref mut rhs) = self {
             Ok((lhs, rhs))
         }
@@ -220,7 +163,7 @@ impl Expr {
         }
     }
 
-    fn unapp(&self) -> Result<(Box<Expr>, Box<Expr>), RuntimeError> {
+    fn as_application(&self) -> Result<(Box<Expr>, Box<Expr>), RuntimeError> {
         if let Self::Application(ref lhs, ref rhs) = self {
             Ok((lhs.clone(), rhs.clone()))
         }
@@ -229,7 +172,7 @@ impl Expr {
         }
     }
     
-    fn unapp_ref(&self) -> Result<(&Expr, &Expr), RuntimeError> {
+    fn as_application_ref(&self) -> Result<(&Expr, &Expr), RuntimeError> {
         if let Self::Application(ref lhs, ref rhs) = self {
             Ok((lhs, rhs))
         }
@@ -238,17 +181,7 @@ impl Expr {
         }
     }
     
-    fn unabs_mut(&mut self) -> Result<(&mut String, &mut Expr), RuntimeError> {
-        if let Self::Function(ref mut arg, ref mut body) = self {
-            Ok((arg, body))
-        }
-        else {
-            Err(RuntimeError::NotFunction)
-        }
-    }
-
-
-    fn unabs(&self) -> Result<(&String, Box<Expr>), RuntimeError> {
+    fn as_function(&self) -> Result<(&String, Box<Expr>), RuntimeError> {
         if let Self::Function(ref arg, ref body) = self {
             Ok((arg, body.clone()))
         }
@@ -257,10 +190,10 @@ impl Expr {
         }
     }
 
-    fn is_reducible(&self, limit: usize, count: usize) -> bool {
+    fn is_reducible(&self) -> bool {
         self.lhs()
-            .and_then(|t| t.unabs())
-            .is_ok() && (limit == 0 || count < limit)
+            .and_then(|t| t.as_function())
+            .is_ok()
     }
 }
 
@@ -287,20 +220,23 @@ fn main() {
 
     let mut exprs = Vec::new();
     for arg in args.into_iter() {
-        let mut file = File::open(arg).expect("file error");
+        let mut path = PathBuf::from(arg);
+        std::fs::canonicalize(&mut path).expect("path error");
+
+        let mut file = File::open(path.clone()).expect("file error");
         let mut source = String::new();
         file.read_to_string(&mut source).expect("file error");
 
         let tokens: &mut dyn Iterator<Item = Token> = &mut Token::lex(source.chars());
-        exprs.extend(Parser::from(tokens).parse(&mut scope.bindings)
+        let mut parser = Parser::from(tokens);
+        parser.set_path(path.parent().unwrap().to_path_buf());
+        exprs.extend(parser.parse(&mut scope.bindings)
             .expect("parsing error"));
-        
-        println!("{:?}", exprs);
     }
 
     for expr in exprs {
         let mut expr = scope.substitute(expr);
-        expr.beta_reduce(Order::CallByName, 0).expect("runtime error");
+        expr.beta_reduce().expect("runtime error");
         println!("{}", expr.pretty_to_string(&scope));
     }
 }

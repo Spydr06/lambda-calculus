@@ -19,6 +19,15 @@ let null = λp.p (λx.λy.false);
 
 let succ = λn.λf.λx.f (n f x);
 let plus = λm.λn.λf.λx.m f (n f x);
+let mult = λm.λn.λf.m (n f);
+let pow = λb.λe.e b;
+
+let leq = λm.λn.isZero (sub m n);
+
+let Φ = λx.pair (second x) (succ (second x));
+let pred = λn.first (n Φ (pair 0 0));
+
+let sub = λm.λn.n pred m;
 
 let I = λx.x;
 let S = λx.λy.λz.x z (y z);
@@ -30,4 +39,3 @@ let Y = λg.(λx.g (x x)) (λx.g (x x));
 let Δ = λx.x x;
 let Ω = Δ Δ;
 
-succ 2
