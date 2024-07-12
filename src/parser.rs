@@ -1,11 +1,12 @@
 use std::{collections::{hash_map, HashMap}, fs::File, io::Read, iter::Peekable, path::PathBuf};
 
-use crate::{Binding, Declaration, Expr};
+use crate::{Binding, Declaration, Expr, Identifier, Registry};
 
 #[derive(PartialEq, Eq, Debug, Default, Clone)]
 pub enum Token {
     Identifier(String),
     String(String),
+    Number(u32),
     Include,
     Lambda,
     Let,
@@ -50,6 +51,17 @@ impl Token {
             '\0' => Self::Eof, 
             '\'' => Self::String(input.take_while(|ch| *ch != '\'').collect()),
             '\"' => Self::String(input.take_while(|ch| *ch != '\"').collect()),
+            ch if ch.is_numeric() => {
+                let mut number = String::new();
+                number.push(ch);
+
+                while let Some(&next) = input.peek() && next.is_numeric() {
+                    number.push(next);
+                    input.next();
+                }
+
+                Self::Number(number.parse().unwrap())
+            }
             ch if char_is_ident(ch) => {
                 let mut ident = String::new();
                 ident.push(ch);
@@ -73,7 +85,7 @@ impl Token {
     }
 
     pub fn starts_expr(&self) -> bool {
-        matches!(self, Self::Lambda | Self::Identifier(_) | Self::LeftParen)
+        matches!(self, Self::Lambda | Self::Identifier(_) | Self::LeftParen | Self::Number(_))
     }
 }
 
@@ -91,8 +103,8 @@ impl From<std::io::Error> for ParseError {
     }
 }
 
-impl From<hash_map::OccupiedError<'_, String, Binding>> for ParseError {
-    fn from(value: hash_map::OccupiedError<'_, String, Binding>) -> Self {
+impl From<hash_map::OccupiedError<'_, Identifier, Binding>> for ParseError {
+    fn from(value: hash_map::OccupiedError<'_, Identifier, Binding>) -> Self {
         Self::Redefinition(value.to_string())
     }
 }
@@ -107,19 +119,18 @@ impl Parser {
         self.origin_path = Some(path)
     }
     
-    pub fn parse(&mut self, declarations: &mut HashMap<String, Binding>) -> Result<Vec<Expr>, ParseError> {
+    pub fn parse(&mut self, declarations: &mut HashMap<Identifier, Binding>, registry: &mut Registry) -> Result<Vec<Expr>, ParseError> {
         let mut exprs = vec![];
         while let Some(token) = self.peek() {
             match token {
                 Token::Let => {
-                    let (ident, expr) = self.parse_let_binding()?;
-                    declarations.try_insert(ident.to_string(), expr)?;
+                    let (ident, expr) = self.parse_let_binding(registry)?;
+                    declarations.try_insert(ident, expr)?;
                 }
                 Token::Include => self.expand_include()?,
-                _ => exprs.push(self.parse_expr()?)
+                _ => exprs.push(self.parse_expr(registry)?)
             }
         }
-
 
         Ok(exprs) 
     }
@@ -171,7 +182,7 @@ impl Parser {
             .flatten()
     }
 
-    fn parse_let_binding(&mut self) -> Result<Declaration, ParseError> {
+    fn parse_let_binding(&mut self, registry: &mut Registry) -> Result<Declaration, ParseError> {
         self.expect(Token::Let)?;
 
         let primitive = self.peek() == Some(&Token::LeftParen);
@@ -183,23 +194,24 @@ impl Parser {
 
         let ident = self.expect_ident()?;
         self.expect(Token::Assign)?;
-        let expr = self.parse_expr()?;
+        let expr = self.parse_expr(registry)?;
         self.expect(Token::Semicolon)?;
 
-        Ok((ident, Binding(expr, primitive)))
+        Ok((registry.get(ident), Binding(expr, primitive)))
     }
 
-    fn parse_basic_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_basic_expr(&mut self, registry: &mut Registry) -> Result<Expr, ParseError> {
         match self.next().unwrap_or_default() {
-            Token::Identifier(ident) => Ok(Expr::Variable(ident)),
+            Token::Identifier(ident) => Ok(Expr::Variable(registry.get(ident))),
+            Token::Number(number) => Ok(Expr::church_numeral(number, registry)),
             Token::Lambda => {
                 let argument = self.expect_ident()?;
                 self.expect(Token::Dot)?;
-                let expr = self.parse_expr()?;
-                Ok(Expr::Function(argument, Box::new(expr)))
+                let expr = self.parse_expr(registry)?;
+                Ok(Expr::Function(registry.get(argument), Box::new(expr)))
             }
             Token::LeftParen => {
-                let expr = self.parse_expr()?;
+                let expr = self.parse_expr(registry)?;
                 self.expect(Token::RightParen)?;
                 Ok(expr)
             }
@@ -208,13 +220,13 @@ impl Parser {
         }
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut expr = self.parse_basic_expr()?;
+    fn parse_expr(&mut self, registry: &mut Registry) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_basic_expr(registry)?;
 
         while let Some(next) = self.peek() && next.starts_expr() {
             expr = Expr::Application(
                 Box::new(expr),
-                Box::new(self.parse_basic_expr()?),
+                Box::new(self.parse_basic_expr(registry)?),
             )
         }
 

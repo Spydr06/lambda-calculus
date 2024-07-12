@@ -3,60 +3,13 @@
 #![feature(let_chains)]
 #![feature(if_let_guard)]
 
-use std::{collections::HashMap, fmt, fs::File, io::Read, path::PathBuf};
+mod parser;
+mod scope;
+
+use std::{fmt, fs::File, io::Read, path::PathBuf};
 
 use parser::*;
-
-mod parser;
-
-#[derive(Clone, Debug)]
-struct Binding(Expr, bool);
-
-type Declaration<'a> = (String, Binding);
-
-struct Scope {
-    bindings: HashMap<String, Binding>
-}
-
-impl Scope {
-    fn from_pairs<const N: usize>(pairs: [Declaration<'_>; N]) -> Self {
-        Self {
-            bindings: HashMap::from(pairs)
-        }
-    }
-
-    fn get(&mut self, ident: &String) -> Option<Expr> {
-        if let Some(binding) = self.bindings.get(ident).cloned() {
-            return Some(binding.0)
-        }
-
-        ident.parse().ok().map(|number| self.construct_number(number))
-    }
-
-    fn construct_number(&mut self, number: u32) -> Expr {
-        let mut expr = Expr::Variable("x".to_string());
-        
-        for _ in 0..number {
-            expr = Expr::Application(Box::new(Expr::Variable("f".to_string())), Box::new(expr));
-        }
-
-        expr = Expr::Function("x".to_string(), Box::new(expr));
-        expr = Expr::Function("f".to_string(), Box::new(expr));
-
-        self.bindings.insert(number.to_string(), Binding(expr.clone(), true));
-
-        expr
-    }
-
-    fn substitute(&mut self, expr: Expr) -> Expr {
-        match expr {
-            Expr::Variable(ref var) if let Some(subst) = self.get(var) => self.substitute(subst),
-            Expr::Variable(var) => Expr::Variable(var),
-            Expr::Function(arg, body) => Expr::Function(arg, Box::new(self.substitute(*body))),
-            Expr::Application(left, right) => Expr::Application(Box::new(self.substitute(*left)), Box::new(self.substitute(*right)))
-        }
-    }
-}
+use scope::*;
 
 #[derive(Debug)]
 enum RuntimeError {
@@ -76,11 +29,26 @@ impl fmt::Display for RuntimeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Expr {
     Application(Box<Expr>, Box<Expr>),
-    Function(String, Box<Expr>),
-    Variable(String),
+    Function(Identifier, Box<Expr>),
+    Variable(Identifier),
 }
 
 impl Expr {
+    fn church_numeral(number: u32, registry: &mut Registry) -> Self {
+        let f = registry.get("f".to_string());
+        let x = registry.get("x".to_string());
+        let mut expr = Expr::Variable(x);
+        
+        for _ in 0..number {
+            expr = Expr::Application(Box::new(Expr::Variable(f)), Box::new(expr));
+        }
+
+        expr = Expr::Function(x, Box::new(expr));
+        expr = Expr::Function(f, Box::new(expr));
+
+        expr
+    }
+
     fn beta_reduce(&mut self) -> Result<(), RuntimeError> {
         match *self {
             Self::Application(_, _) => {
@@ -102,7 +70,7 @@ impl Expr {
     }
 
     fn apply(&mut self) -> Result<(), RuntimeError> {
-        let to_apply = std::mem::replace(self, Self::Variable("".to_string()));
+        let to_apply = std::mem::replace(self, Self::Variable(0));
         let (lhs, rhs) = to_apply.as_application()?;
         
         let (arg, mut body) = lhs.as_function()?;
@@ -113,7 +81,7 @@ impl Expr {
         Ok(())
     }
 
-    fn substitute(&mut self, ident: &String, substitute: Expr) {
+    fn substitute(&mut self, ident: &Identifier, substitute: Expr) {
         match self {
             Self::Variable(ref var) if var == ident => *self = substitute,
             Self::Function(arg, ref mut body) if arg != ident => body.substitute(ident, substitute),
@@ -127,15 +95,6 @@ impl Expr {
 
     fn is_application(&self) -> bool {
         matches!(self, Self::Application(_, _))
-    }
-
-    fn pretty_to_string(&self, scope: &Scope) -> String {
-        if let Some((id, _)) = scope.bindings.iter().filter(|(_, b)| b.1).find(|(_, b)| &b.0 == self) {
-            id.clone()
-        }
-        else {
-            self.to_string()
-        }
     }
 
     fn rhs_mut(&mut self) -> Result<&mut Expr, RuntimeError> {
@@ -181,7 +140,7 @@ impl Expr {
         }
     }
     
-    fn as_function(&self) -> Result<(&String, Box<Expr>), RuntimeError> {
+    fn as_function(&self) -> Result<(&Identifier, Box<Expr>), RuntimeError> {
         if let Self::Function(ref arg, ref body) = self {
             Ok((arg, body.clone()))
         }
@@ -195,19 +154,26 @@ impl Expr {
             .and_then(|t| t.as_function())
             .is_ok()
     }
-}
 
-impl fmt::Display for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { 
+    fn to_string(&self, registry: &Registry) -> String {
         match self {
-            Self::Variable(ident) => write!(f, "{ident}"),
-            Self::Function(arg, body) => write!(f, "λ{arg}.{body}"),
+            Self::Variable(ident) => format!("{}<{ident}>", registry.get_name(ident).unwrap()),
+            Self::Function(arg, body) => format!("λ{}<{arg}>.{}", registry.get_name(arg).unwrap(), body.to_string(registry)),
             Self::Application(left, right) => if right.is_application() {
-                write!(f, "{left} ({right})")
+                format!("{} ({})", left.to_string(registry), right.to_string(registry))
             }
             else {
-                write!(f, "{left} {right}")
+                format!("{} {}", left.to_string(registry), right.to_string(registry))
             }
+        }
+    }
+
+    fn pretty_to_string(&self, scope: &Scope, registry: &Registry) -> String {
+        if let Some((id, _)) = scope.bindings().iter().filter(|(_, b)| b.1).find(|(_, b)| &b.0 == self) {
+            registry.get_name(id).unwrap().clone()
+        }
+        else {
+            self.to_string(registry)
         }
     }
 }
@@ -216,7 +182,8 @@ fn main() {
     let mut args = std::env::args();
     args.next();
 
-    let mut scope = Scope::from_pairs([]);
+    let mut registry = Registry::default();
+    let mut scope = Scope::default();
 
     let mut exprs = Vec::new();
     for arg in args.into_iter() {
@@ -230,13 +197,17 @@ fn main() {
         let tokens: &mut dyn Iterator<Item = Token> = &mut Token::lex(source.chars());
         let mut parser = Parser::from(tokens);
         parser.set_path(path.parent().unwrap().to_path_buf());
-        exprs.extend(parser.parse(&mut scope.bindings)
+        exprs.extend(parser.parse(scope.bindings_mut(), &mut registry)
             .expect("parsing error"));
     }
+
+/*    for (ident, Binding(expr, _)) in scope.bindings().iter() {
+        println!("{}<{ident}> = {}", registry.get_name(ident).unwrap(), expr.to_string(&registry));
+    }*/
 
     for expr in exprs {
         let mut expr = scope.substitute(expr);
         expr.beta_reduce().expect("runtime error");
-        println!("{}", expr.pretty_to_string(&scope));
+        println!("{}", expr.pretty_to_string(&scope, &registry));
     }
 }
