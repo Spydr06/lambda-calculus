@@ -13,20 +13,15 @@ use scope::*;
 
 #[derive(Debug)]
 enum RuntimeError {
-    NotApplication,
-    NotFunction
 }
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotApplication => write!(f, "not an application"),
-            Self::NotFunction => write!(f, "not a function"),
-        }
+        Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Expr {
     Application(Box<Expr>, Box<Expr>),
     Function(Identifier, Box<Expr>),
@@ -49,110 +44,40 @@ impl Expr {
         expr
     }
 
-    fn beta_reduce(&mut self) -> Result<(), RuntimeError> {
-        match *self {
-            Self::Application(_, _) => {
-                self.lhs_mut()?.beta_reduce()?;
-
-                if self.is_reducible() {
-                    self.apply()?;
-                    self.beta_reduce()?;
-                }
-                else {
-                    self.lhs_mut()?.beta_reduce()?;
-                    self.rhs_mut()?.beta_reduce()?;
-                }
-            }
-            _ => (),
-        }
-
-        Ok(())
-    }
-
-    fn apply(&mut self) -> Result<(), RuntimeError> {
-        let to_apply = std::mem::replace(self, Self::Variable(0));
-        let (lhs, rhs) = to_apply.as_application()?;
-        
-        let (arg, mut body) = lhs.as_function()?;
-        body.substitute(arg, *rhs);
-
-        *self = *body;
-
-        Ok(())
-    }
-
-    fn substitute(&mut self, ident: &Identifier, substitute: Expr) {
+    fn beta_reduce(self) -> Result<Self, RuntimeError> { 
         match self {
-            Self::Variable(ref var) if var == ident => *self = substitute,
-            Self::Function(arg, ref mut body) if arg != ident => body.substitute(ident, substitute),
-            Self::Application(ref mut left, ref mut right) => {
-                left.substitute(ident, substitute.clone());
-                right.substitute(ident, substitute);
+            Self::Application(lhs, rhs) => {
+                let lhs = lhs.beta_reduce()?;
+                let new = if let Self::Function(arg, body) = lhs {
+                    body.substitute(arg, &rhs).beta_reduce()?
+                }
+                else {        
+                    Self::Application(
+                        Box::new(lhs.beta_reduce()?),
+                        Box::new(rhs.beta_reduce()?)
+                    )
+                };
+
+                Ok(new)
             }
-            _ => ()
+            _ => Ok(self),
+        }
+    }
+
+    fn substitute(self, ident: Identifier, substitute: &Expr) -> Self {
+        match self {
+            Self::Variable(var) if var == ident => substitute.clone(),
+            Self::Function(arg, body) if arg != ident => Self::Function(arg, Box::new(body.substitute(ident, substitute))),
+            Self::Application(left, right) => Self::Application(
+                    Box::new(left.substitute(ident, substitute)),
+                    Box::new(right.substitute(ident, substitute))
+                ),
+            _ => self
         }
     }
 
     fn is_application(&self) -> bool {
         matches!(self, Self::Application(_, _))
-    }
-
-    fn rhs_mut(&mut self) -> Result<&mut Expr, RuntimeError> {
-        self.as_application_mut().map(|(_, rhs)| rhs)
-    }
-
-    fn rhs(&self) -> Result<&Expr, RuntimeError> {
-        self.as_application_ref().map(|(_, rhs)| rhs)
-    }
-
-    fn lhs_mut(&mut self) -> Result<&mut Expr, RuntimeError> {
-        self.as_application_mut().map(|(lhs, _)| lhs)
-    }
-
-    fn lhs(&self) -> Result<&Expr, RuntimeError> {
-        self.as_application_ref().map(|(lhs, _)| lhs)
-    }
-
-    fn as_application_mut(&mut self) -> Result<(&mut Expr, &mut Expr), RuntimeError> {
-        if let Self::Application(ref mut lhs, ref mut rhs) = self {
-            Ok((lhs, rhs))
-        }
-        else {
-            Err(RuntimeError::NotApplication)
-        }
-    }
-
-    fn as_application(&self) -> Result<(Box<Expr>, Box<Expr>), RuntimeError> {
-        if let Self::Application(ref lhs, ref rhs) = self {
-            Ok((lhs.clone(), rhs.clone()))
-        }
-        else {
-            Err(RuntimeError::NotApplication)
-        }
-    }
-    
-    fn as_application_ref(&self) -> Result<(&Expr, &Expr), RuntimeError> {
-        if let Self::Application(ref lhs, ref rhs) = self {
-            Ok((lhs, rhs))
-        }
-        else {
-            Err(RuntimeError::NotApplication)
-        }
-    }
-    
-    fn as_function(&self) -> Result<(&Identifier, Box<Expr>), RuntimeError> {
-        if let Self::Function(ref arg, ref body) = self {
-            Ok((arg, body.clone()))
-        }
-        else {
-            Err(RuntimeError::NotFunction)
-        }
-    }
-
-    fn is_reducible(&self) -> bool {
-        self.lhs()
-            .and_then(|t| t.as_function())
-            .is_ok()
     }
 
     fn to_string(&self, registry: &Registry) -> String {
@@ -206,8 +131,7 @@ fn main() {
     }*/
 
     for expr in exprs {
-        let mut expr = scope.substitute(expr);
-        expr.beta_reduce().expect("runtime error");
+        let expr = scope.substitute(expr).beta_reduce().expect("runtime error");
         println!("{}", expr.pretty_to_string(&scope, &registry));
     }
 }
