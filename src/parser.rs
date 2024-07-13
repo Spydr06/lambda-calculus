@@ -1,6 +1,6 @@
 use std::{collections::{hash_map, HashMap}, fs::File, io::Read, iter::Peekable, path::PathBuf};
 
-use crate::{Binding, Declaration, Expr, Identifier, Registry};
+use crate::{Binding, Declaration, Expr, Identifier, Registry, Stmt};
 
 #[derive(PartialEq, Eq, Debug, Default, Clone)]
 pub enum Token {
@@ -10,9 +10,11 @@ pub enum Token {
     Include,
     Lambda,
     Let,
+    Assert,
     Primitive,
     Assign,
     Dot,
+    Comma,
     Semicolon,
     LeftParen,
     RightParen,
@@ -28,6 +30,7 @@ thread_local! {
             ("let", Token::Let),
             ("include", Token::Include),
             ("primitive", Token::Primitive),
+            ("assert", Token::Assert),
         ]);
 }
 
@@ -45,6 +48,7 @@ impl Token {
         match input.next().unwrap_or('\0') {
             'λ' | '\\' => Self::Lambda,
             '.' => Self::Dot,
+            ',' => Self::Comma,
             ';' => Self::Semicolon,
             '(' => Self::LeftParen,
             ')' => Self::RightParen,
@@ -103,12 +107,6 @@ impl From<std::io::Error> for ParseError {
     }
 }
 
-impl From<hash_map::OccupiedError<'_, Identifier, Binding>> for ParseError {
-    fn from(value: hash_map::OccupiedError<'_, Identifier, Binding>) -> Self {
-        Self::Redefinition(value.to_string())
-    }
-}
-
 pub struct Parser {
     tokens: Vec<Token>,
     origin_path: Option<std::path::PathBuf>,
@@ -119,20 +117,39 @@ impl Parser {
         self.origin_path = Some(path)
     }
     
-    pub fn parse(&mut self, declarations: &mut HashMap<Identifier, Binding>, registry: &mut Registry) -> Result<Vec<Expr>, ParseError> {
-        let mut exprs = vec![];
-        while let Some(token) = self.peek() {
-            match token {
-                Token::Let => {
-                    let (ident, expr) = self.parse_let_binding(registry)?;
-                    declarations.try_insert(ident, expr)?;
-                }
-                Token::Include => self.expand_include()?,
-                _ => exprs.push(self.parse_expr(registry)?)
-            }
+    pub fn parse(&mut self, registry: &mut Registry) -> Result<Vec<Stmt>, ParseError> {
+        let mut stmts = vec![];
+        while self.peek().is_some() {
+            stmts.push(self.parse_stmt(registry)?)
         }
 
-        Ok(exprs) 
+        Ok(stmts) 
+    }
+
+    fn parse_stmt(&mut self, registry: &mut Registry) -> Result<Stmt, ParseError> {
+        let stmt = match self.peek().unwrap() {
+            Token::Let => self.parse_let_binding(registry)?,
+            Token::Include => self.parse_include()?,
+            Token::Assert => self.parse_assertion(registry)?,
+            _ => return Err(ParseError::UnexpectedToken(self.next().unwrap_or_default(), "statement".to_string()))
+            //_ => exprs.push(self.parse_expr(registry)?)
+        };
+
+        self.expect(Token::Semicolon)?;
+        Ok(stmt)
+    }
+     
+    fn peek(&mut self) -> Option<&Token> {
+        self.tokens.first()
+    }
+
+    fn next(&mut self) -> Option<Token> {
+        if self.tokens.len() > 0 {
+            Some(self.tokens.remove(0))
+        }
+        else {
+            None
+        }
     }
     
     fn expect_ident(&mut self) -> Result<String, ParseError> {
@@ -159,19 +176,6 @@ impl Parser {
             .flatten()
     }
 
-    fn peek(&mut self) -> Option<&Token> {
-        self.tokens.first()
-    }
-
-    fn next(&mut self) -> Option<Token> {
-        if self.tokens.len() > 0 {
-            Some(self.tokens.remove(0))
-        }
-        else {
-            None
-        }
-    }
-
     fn expect(&mut self, expect: Token) -> Result<(), ParseError> {
         self.next()
             .map(|next| (next == expect)
@@ -182,7 +186,7 @@ impl Parser {
             .flatten()
     }
 
-    fn parse_let_binding(&mut self, registry: &mut Registry) -> Result<Declaration, ParseError> {
+    fn parse_let_binding(&mut self, registry: &mut Registry) -> Result<Stmt, ParseError> {
         self.expect(Token::Let)?;
 
         let primitive = self.peek() == Some(&Token::LeftParen);
@@ -195,9 +199,8 @@ impl Parser {
         let ident = self.expect_ident()?;
         self.expect(Token::Assign)?;
         let expr = self.parse_expr(registry)?;
-        self.expect(Token::Semicolon)?;
 
-        Ok((registry.get(ident), Binding(expr, primitive)))
+        Ok(Stmt::LetBinding(registry.get(ident), Binding(expr, primitive)))
     }
 
     fn parse_basic_expr(&mut self, registry: &mut Registry) -> Result<Expr, ParseError> {
@@ -233,23 +236,32 @@ impl Parser {
         Ok(expr)
     }
 
-    fn expand_include(&mut self) -> Result<(), ParseError> {
+    fn parse_include(&mut self) -> Result<Stmt, ParseError> {
         self.expect(Token::Include)?;
         let include_path = self.expect_string()?;
 
         let mut path = self.origin_path.to_owned().unwrap_or_else(|| PathBuf::new());
         path.push(include_path);
+        std::fs::canonicalize(&mut path)?;
 
-        let mut file = File::open(path)?;
-        let mut source = String::new();
-        file.read_to_string(&mut source)?;
+        Ok(Stmt::Include(path))
+    }
 
-        let tokens = std::mem::replace(&mut self.tokens, vec![]);
-        let mut new = Token::lex(source.chars()).collect::<Vec<_>>();
-        new.extend(tokens);
-        self.tokens = new;
-        
-        Ok(())
+    fn parse_assertion(&mut self, registry: &mut Registry) -> Result<Stmt, ParseError> {
+        self.expect(Token::Assert)?;
+
+        let expr = self.parse_expr(registry)?;
+
+        let exp;
+        if let Some(next) = self.peek() && next == &Token::Comma {
+            self.next();
+            exp = Some(self.expect_string()?);
+        }
+        else {
+            exp = None;
+        }
+
+        Ok(Stmt::Assertion(expr, exp))
     }
 }
 

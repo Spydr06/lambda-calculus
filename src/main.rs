@@ -6,18 +6,41 @@
 mod parser;
 mod scope;
 
-use std::{fmt, fs::File, io::Read, path::PathBuf};
+use std::{collections::{hash_map, HashSet}, fmt, fs::File, io::Read, path::PathBuf};
 
 use parser::*;
 use scope::*;
 
 #[derive(Debug)]
 enum RuntimeError {
+    Redefinition(String),
+    UnboundVariable(Identifier),
+    AssertionFailed(Expr, Expr, Option<String>),
+    ParseError(ParseError),
+    IncludedFile(std::io::Error),
 }
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Ok(())
+    }
+}
+
+impl From<hash_map::OccupiedError<'_, Identifier, Binding>> for RuntimeError {
+    fn from(value: hash_map::OccupiedError<'_, Identifier, Binding>) -> Self {
+        Self::Redefinition(value.to_string())
+    }
+}
+
+impl From<ParseError> for RuntimeError {
+    fn from(value: ParseError) -> Self {
+        Self::ParseError(value)
+    }
+}
+
+impl From<std::io::Error> for RuntimeError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IncludedFile(value)
     }
 }
 
@@ -59,6 +82,9 @@ impl Expr {
                 };
 
                 Ok(new)
+            },
+            Self::Variable(ident) => {
+                Err(RuntimeError::UnboundVariable(ident))
             }
             _ => Ok(self),
         }
@@ -82,14 +108,12 @@ impl Expr {
 
     fn to_string(&self, registry: &Registry) -> String {
         match self {
-            Self::Variable(ident) => format!("{}<{ident}>", registry.get_name(ident).unwrap()),
-            Self::Function(arg, body) => format!("λ{}<{arg}>.{}", registry.get_name(arg).unwrap(), body.to_string(registry)),
-            Self::Application(left, right) => if right.is_application() {
-                format!("{} ({})", left.to_string(registry), right.to_string(registry))
-            }
-            else {
+            Self::Variable(ident) => registry.get_name(ident).unwrap().clone(),
+            Self::Function(arg, body) => format!("λ{}.{}", registry.get_name(arg).unwrap(), body.to_string(registry)),
+            Self::Application(left, right) if right.is_application() =>
+                format!("{} ({})", left.to_string(registry), right.to_string(registry)),
+            Self::Application(left, right) =>
                 format!("{} {}", left.to_string(registry), right.to_string(registry))
-            }
         }
     }
 
@@ -103,17 +127,17 @@ impl Expr {
     }
 }
 
-fn main() {
-    let mut args = std::env::args();
-    args.next();
+enum Stmt {
+    Include(PathBuf),
+    LetBinding(Identifier, Binding),
+    Assertion(Expr, Option<String>)
+}
 
-    let mut registry = Registry::default();
-    let mut scope = Scope::default();
-
-    let mut exprs = Vec::new();
-    for arg in args.into_iter() {
-        let mut path = PathBuf::from(arg);
-        std::fs::canonicalize(&mut path).expect("path error");
+impl Stmt {
+    fn parse_all(path: PathBuf, registry: &mut Registry, includes: &mut HashSet<PathBuf>) -> Result<Vec<Self>, std::io::Error> {
+        if includes.contains(&path) {
+            return Ok(Vec::new());
+        }
 
         let mut file = File::open(path.clone()).expect("file error");
         let mut source = String::new();
@@ -122,16 +146,61 @@ fn main() {
         let tokens: &mut dyn Iterator<Item = Token> = &mut Token::lex(source.chars());
         let mut parser = Parser::from(tokens);
         parser.set_path(path.parent().unwrap().to_path_buf());
-        exprs.extend(parser.parse(scope.bindings_mut(), &mut registry)
-            .expect("parsing error"));
+        let stmts = parser.parse(registry)
+            .expect("parsing error");
+        
+        includes.insert(path);
+
+        Ok(stmts)
     }
 
-/*    for (ident, Binding(expr, _)) in scope.bindings().iter() {
-        println!("{}<{ident}> = {}", registry.get_name(ident).unwrap(), expr.to_string(&registry));
-    }*/
+    fn eval(self, registry: &mut Registry, scope: &mut Scope, includes: &mut HashSet<PathBuf>) -> Result<(), RuntimeError> {
+        match self {
+            Self::LetBinding(ident, binding) => scope.put(ident, binding),
+            Self::Include(path) => {
+                let stmts = Self::parse_all(path, registry, includes)?;
+                for stmt in stmts {
+                    stmt.eval(registry, scope, includes)?;
+                }
+                Ok(())
+            },
+            Self::Assertion(expr, exp) => {
+                let expr = scope.substitute(expr).beta_reduce()?;
+                let true_ident = registry.get("true".to_string()); 
+                if let Some(t) = scope.get(&true_ident) {
+                    (expr == t)
+                        .then_some(())
+                        .ok_or_else(|| RuntimeError::AssertionFailed(expr, t, exp))
+                }
+                else {
+                    Err(RuntimeError::UnboundVariable(true_ident))
+                }
+            }
+        }
+    }
+}
 
-    for expr in exprs {
-        let expr = scope.substitute(expr).beta_reduce().expect("runtime error");
-        println!("{}", expr.pretty_to_string(&scope, &registry));
+fn main() {
+    let mut args = std::env::args();
+    args.next();
+
+    let mut registry = Registry::default();
+    let mut scope = Scope::default();
+    let mut includes = HashSet::new();
+
+    let mut stmts = Vec::new();
+    for arg in args.into_iter() {
+        let mut path = PathBuf::from(arg);
+        std::fs::canonicalize(&mut path).expect("path error");
+
+        stmts.extend(
+            Stmt::parse_all(path, &mut registry, &mut includes)
+                .expect("parse error")
+        )
+    }
+
+    for stmt in stmts {
+        stmt.eval(&mut registry, &mut scope, &mut includes)
+            .expect("runtime error");
     }
 }

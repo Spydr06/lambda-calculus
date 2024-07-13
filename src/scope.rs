@@ -1,6 +1,6 @@
 use std::{cell::Cell, collections::{hash_map::Entry, HashMap}};
 
-use crate::Expr;
+use crate::{Expr, RuntimeError};
 
 pub type Identifier = u32;
 
@@ -46,7 +46,12 @@ pub struct Scope {
 }
 
 impl Scope {
-    fn get(&mut self, ident: &Identifier) -> Option<Expr> {
+    pub fn put(&mut self, ident: Identifier, binding: Binding) -> Result<(), RuntimeError> {
+        self.bindings.try_insert(ident, binding)?;
+        Ok(())
+    }
+
+    pub fn get(&mut self, ident: &Identifier) -> Option<Expr> {
         self.bindings.get(ident).map(|Binding(expr, _)| expr.clone())
     }
 
@@ -61,10 +66,6 @@ impl Scope {
 
     pub fn bindings(&self) -> &HashMap<Identifier, Binding> {
         &self.bindings
-    }
-
-    pub fn bindings_mut(&mut self) -> &mut HashMap<Identifier, Binding> {
-        &mut self.bindings
     }
 }
 

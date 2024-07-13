@@ -10,6 +10,7 @@ let ifThenElse = λp.λa.λb.p a b;
 let isZero = λn.n (λx.false) true;
 
 let pair = λx.λy.λf.f x y;
+let list = pair;
 
 let first = λp.p true;
 let second = λp.p false;
@@ -18,16 +19,14 @@ let nil = λx.true;
 let null = λp.p (λx.λy.false);
 
 let succ = λn.λf.λx.f (n f x);
+let pred = λn.λf.λx.n (λg.λh.h (g f)) (λu.x) (λu.u);
+
 let plus = λm.λn.λf.λx.m f (n f x);
+let sub = λm.λn.n pred m;
 let mult = λm.λn.λf.m (n f);
 let pow = λb.λe.e b;
 
 let leq = λm.λn.isZero (sub m n);
-
-let Φ = λx.pair (second x) (succ (second x));
-let pred = λn.first (n Φ (pair 0 0));
-
-let sub = λm.λn.n pred m;
 
 let I = λx.x;
 let S = λx.λy.λz.x z (y z);
