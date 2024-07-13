@@ -3,46 +3,15 @@
 #![feature(let_chains)]
 #![feature(if_let_guard)]
 
+mod error;
 mod parser;
 mod scope;
 
 use std::{collections::{hash_map, HashSet}, fmt, fs::File, io::Read, path::PathBuf};
 
+use error::*;
 use parser::*;
 use scope::*;
-
-#[derive(Debug)]
-enum RuntimeError {
-    Redefinition(String),
-    UnboundVariable(Identifier),
-    AssertionFailed(Expr, Expr, Option<String>),
-    ParseError(ParseError),
-    IncludedFile(std::io::Error),
-}
-
-impl fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
-}
-
-impl From<hash_map::OccupiedError<'_, Identifier, Binding>> for RuntimeError {
-    fn from(value: hash_map::OccupiedError<'_, Identifier, Binding>) -> Self {
-        Self::Redefinition(value.to_string())
-    }
-}
-
-impl From<ParseError> for RuntimeError {
-    fn from(value: ParseError) -> Self {
-        Self::ParseError(value)
-    }
-}
-
-impl From<std::io::Error> for RuntimeError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IncludedFile(value)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Expr {
@@ -67,7 +36,7 @@ impl Expr {
         expr
     }
 
-    fn beta_reduce(self) -> Result<Self, RuntimeError> { 
+    fn beta_reduce(self) -> Result<Self, Error> { 
         match self {
             Self::Application(lhs, rhs) => {
                 let lhs = lhs.beta_reduce()?;
@@ -84,7 +53,7 @@ impl Expr {
                 Ok(new)
             },
             Self::Variable(ident) => {
-                Err(RuntimeError::UnboundVariable(ident))
+                Err(Error::UnboundVariable(ident))
             }
             _ => Ok(self),
         }
@@ -154,7 +123,7 @@ impl Stmt {
         Ok(stmts)
     }
 
-    fn eval(self, registry: &mut Registry, scope: &mut Scope, includes: &mut HashSet<PathBuf>) -> Result<(), RuntimeError> {
+    fn eval(self, registry: &mut Registry, scope: &mut Scope, includes: &mut HashSet<PathBuf>) -> Result<(), Error> {
         match self {
             Self::LetBinding(ident, binding) => scope.put(ident, binding),
             Self::Include(path) => {
@@ -170,10 +139,10 @@ impl Stmt {
                 if let Some(t) = scope.get(&true_ident) {
                     (expr == t)
                         .then_some(())
-                        .ok_or_else(|| RuntimeError::AssertionFailed(expr, t, exp))
+                        .ok_or_else(|| Error::AssertionFailed(expr, t, exp))
                 }
                 else {
-                    Err(RuntimeError::UnboundVariable(true_ident))
+                    Err(Error::UnboundVariable(true_ident))
                 }
             }
         }

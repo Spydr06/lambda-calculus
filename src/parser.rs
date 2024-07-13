@@ -1,6 +1,6 @@
-use std::{collections::{hash_map, HashMap}, fs::File, io::Read, iter::Peekable, path::PathBuf};
+use std::{collections::HashMap, iter::Peekable, path::PathBuf};
 
-use crate::{Binding, Declaration, Expr, Identifier, Registry, Stmt};
+use crate::{Binding, Expr, Registry, Stmt, error::Error};
 
 #[derive(PartialEq, Eq, Debug, Default, Clone)]
 pub enum Token {
@@ -93,20 +93,6 @@ impl Token {
     }
 }
 
-#[derive(Debug)]
-pub enum ParseError {
-    UnexpectedToken(Token, String),
-    UnexpectedEof,
-    Redefinition(String),
-    IncludedFile(std::io::Error)
-}
-
-impl From<std::io::Error> for ParseError {
-    fn from(value: std::io::Error) -> Self {
-        Self::IncludedFile(value)
-    }
-}
-
 pub struct Parser {
     tokens: Vec<Token>,
     origin_path: Option<std::path::PathBuf>,
@@ -117,7 +103,7 @@ impl Parser {
         self.origin_path = Some(path)
     }
     
-    pub fn parse(&mut self, registry: &mut Registry) -> Result<Vec<Stmt>, ParseError> {
+    pub fn parse(&mut self, registry: &mut Registry) -> Result<Vec<Stmt>, Error> {
         let mut stmts = vec![];
         while self.peek().is_some() {
             stmts.push(self.parse_stmt(registry)?)
@@ -126,12 +112,12 @@ impl Parser {
         Ok(stmts) 
     }
 
-    fn parse_stmt(&mut self, registry: &mut Registry) -> Result<Stmt, ParseError> {
+    fn parse_stmt(&mut self, registry: &mut Registry) -> Result<Stmt, Error> {
         let stmt = match self.peek().unwrap() {
             Token::Let => self.parse_let_binding(registry)?,
             Token::Include => self.parse_include()?,
             Token::Assert => self.parse_assertion(registry)?,
-            _ => return Err(ParseError::UnexpectedToken(self.next().unwrap_or_default(), "statement".to_string()))
+            _ => return Err(Error::UnexpectedToken(self.next().unwrap_or_default(), "statement".to_string()))
             //_ => exprs.push(self.parse_expr(registry)?)
         };
 
@@ -152,41 +138,41 @@ impl Parser {
         }
     }
     
-    fn expect_ident(&mut self) -> Result<String, ParseError> {
+    fn expect_ident(&mut self) -> Result<String, Error> {
         self.next().map(|tok| {
             if let Token::Identifier(ident) = tok {
                 Ok(ident)
             }
             else {
-                Err(ParseError::UnexpectedToken(tok, "identifier".to_string()))
+                Err(Error::UnexpectedToken(tok, "identifier".to_string()))
             }
-        }).ok_or(ParseError::UnexpectedEof)
+        }).ok_or(Error::UnexpectedEof)
             .flatten()
     }
     
-    fn expect_string(&mut self) -> Result<String, ParseError> {
+    fn expect_string(&mut self) -> Result<String, Error> {
         self.next().map(|tok| {
             if let Token::String(string) = tok {
                 Ok(string)
             }
             else {
-                Err(ParseError::UnexpectedToken(tok, "string".to_string()))
+                Err(Error::UnexpectedToken(tok, "string".to_string()))
             }
-        }).ok_or(ParseError::UnexpectedEof)
+        }).ok_or(Error::UnexpectedEof)
             .flatten()
     }
 
-    fn expect(&mut self, expect: Token) -> Result<(), ParseError> {
+    fn expect(&mut self, expect: Token) -> Result<(), Error> {
         self.next()
             .map(|next| (next == expect)
                 .then_some(())
-                .ok_or_else(|| ParseError::UnexpectedToken(next, format!("token `{expect:?}`")))
+                .ok_or_else(|| Error::UnexpectedToken(next, format!("token `{expect:?}`")))
             )
-            .ok_or(ParseError::UnexpectedEof)
+            .ok_or(Error::UnexpectedEof)
             .flatten()
     }
 
-    fn parse_let_binding(&mut self, registry: &mut Registry) -> Result<Stmt, ParseError> {
+    fn parse_let_binding(&mut self, registry: &mut Registry) -> Result<Stmt, Error> {
         self.expect(Token::Let)?;
 
         let primitive = self.peek() == Some(&Token::LeftParen);
@@ -203,7 +189,7 @@ impl Parser {
         Ok(Stmt::LetBinding(registry.get(ident), Binding(expr, primitive)))
     }
 
-    fn parse_basic_expr(&mut self, registry: &mut Registry) -> Result<Expr, ParseError> {
+    fn parse_basic_expr(&mut self, registry: &mut Registry) -> Result<Expr, Error> {
         match self.next().unwrap_or_default() {
             Token::Identifier(ident) => Ok(Expr::Variable(registry.get(ident))),
             Token::Number(number) => Ok(Expr::church_numeral(number, registry)),
@@ -218,12 +204,12 @@ impl Parser {
                 self.expect(Token::RightParen)?;
                 Ok(expr)
             }
-            Token::Eof => Err(ParseError::UnexpectedEof),
-            token => Err(ParseError::UnexpectedToken(token, "expression".to_string()))
+            Token::Eof => Err(Error::UnexpectedEof),
+            token => Err(Error::UnexpectedToken(token, "expression".to_string()))
         }
     }
 
-    fn parse_expr(&mut self, registry: &mut Registry) -> Result<Expr, ParseError> {
+    fn parse_expr(&mut self, registry: &mut Registry) -> Result<Expr, Error> {
         let mut expr = self.parse_basic_expr(registry)?;
 
         while let Some(next) = self.peek() && next.starts_expr() {
@@ -236,7 +222,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_include(&mut self) -> Result<Stmt, ParseError> {
+    fn parse_include(&mut self) -> Result<Stmt, Error> {
         self.expect(Token::Include)?;
         let include_path = self.expect_string()?;
 
@@ -247,7 +233,7 @@ impl Parser {
         Ok(Stmt::Include(path))
     }
 
-    fn parse_assertion(&mut self, registry: &mut Registry) -> Result<Stmt, ParseError> {
+    fn parse_assertion(&mut self, registry: &mut Registry) -> Result<Stmt, Error> {
         self.expect(Token::Assert)?;
 
         let expr = self.parse_expr(registry)?;

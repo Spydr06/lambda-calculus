@@ -1,6 +1,6 @@
 use std::{cell::Cell, collections::{hash_map::Entry, HashMap}};
 
-use crate::{Expr, RuntimeError};
+use crate::{Expr, error::Error};
 
 pub type Identifier = u32;
 
@@ -38,15 +38,13 @@ impl Registry {
 #[derive(Clone, Debug)]
 pub struct Binding(pub Expr, pub bool);
 
-pub type Declaration = (Identifier, Binding);
-
 #[derive(Default)]
 pub struct Scope {
     bindings: HashMap<Identifier, Binding>
 }
 
 impl Scope {
-    pub fn put(&mut self, ident: Identifier, binding: Binding) -> Result<(), RuntimeError> {
+    pub fn put(&mut self, ident: Identifier, binding: Binding) -> Result<(), Error> {
         self.bindings.try_insert(ident, binding)?;
         Ok(())
     }
