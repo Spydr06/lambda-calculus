@@ -44,7 +44,7 @@ pub struct Scope {
 }
 
 impl Scope {
-    pub fn put(&mut self, ident: Identifier, binding: Binding) -> Result<(), Error> {
+    pub fn put<'a>(&mut self, ident: Identifier, binding: Binding) -> Result<(), Error> {
         self.bindings.try_insert(ident, binding)?;
         Ok(())
     }

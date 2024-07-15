@@ -2,6 +2,7 @@
 #![feature(map_try_insert)]
 #![feature(let_chains)]
 #![feature(if_let_guard)]
+#![feature(hash_set_entry)]
 
 mod error;
 mod parser;
@@ -36,7 +37,7 @@ impl Expr {
         expr
     }
 
-    fn beta_reduce(self) -> Result<Self, Error> { 
+    fn beta_reduce<'a>(self) -> Result<Self, Error> { 
         match self {
             Self::Application(lhs, rhs) => {
                 let lhs = lhs.beta_reduce()?;
@@ -103,51 +104,60 @@ enum Stmt {
 }
 
 impl Stmt {
-    fn parse_all(path: PathBuf, registry: &mut Registry, includes: &mut HashSet<PathBuf>) -> Result<Vec<Self>, std::io::Error> {
+    fn parse_all<'a>(path: PathBuf, registry: &mut Registry, includes: &'a mut HashSet<PathBuf>) -> Result<Vec<Located<'a, Self>>, Located<'a, Error>> {
         if includes.contains(&path) {
             return Ok(Vec::new());
         }
 
-        let mut file = File::open(path.clone()).expect("file error");
-        let mut source = String::new();
-        file.read_to_string(&mut source).expect("file error");
-
-        let tokens: &mut dyn Iterator<Item = Token> = &mut Token::lex(source.chars());
-        let mut parser = Parser::from(tokens);
-        parser.set_path(path.parent().unwrap().to_path_buf());
-        let stmts = parser.parse(registry)
-            .expect("parsing error");
+        let path = includes.get_or_insert(path);
         
-        includes.insert(path);
+        let mut file = File::open(path.clone()).map_err(|err| {
+            let err: Error = err.into();
+            err.with_location(Some(path), 0)
+        })?;
+        let mut source = String::new();
+        file.read_to_string(&mut source).map_err(|err| {
+            let err: Error = err.into();
+            err.with_location(Some(path), 0)
+        })?;
 
-        Ok(stmts)
+        let tokens = Token::lex(source.chars()).collect();
+        let mut parser = Parser::new(tokens, Some(path));
+        parser.parse(registry)
     }
 
-    fn eval(self, registry: &mut Registry, scope: &mut Scope, includes: &mut HashSet<PathBuf>) -> Result<(), Error> {
-        match self {
-            Self::LetBinding(ident, binding) => scope.put(ident, binding),
-            Self::Include(path) => {
-                let stmts = Self::parse_all(path, registry, includes)?;
+    fn eval<'a>(this: Located<'a, Self>, registry: &mut Registry, scope: &mut Scope, includes: &'a mut HashSet<PathBuf>) -> Result<(), Located<'a, Error>> {
+        let path = this.path();
+        let line = this.line();
+        match this.unwrap() {
+            Self::LetBinding(ident, binding) => scope.put(ident, binding).map_err(|err| err.with_location(path, line)),
+            Self::Include(include_path) => {
+                let includes_ptr = includes as *const _ as *mut HashSet<PathBuf>;
+                let stmts = Self::parse_all(include_path, registry, includes)?;
                 for stmt in stmts {
-                    stmt.eval(registry, scope, includes)?;
+                    Stmt::eval(stmt, registry, scope, unsafe { includes_ptr.as_mut().unwrap() })?;
                 }
                 Ok(())
             },
             Self::Assertion(expr, exp) => {
-                let expr = scope.substitute(expr).beta_reduce()?;
+                let expr = scope.substitute(expr)
+                    .beta_reduce()
+                    .map_err(|err| err.with_location(path, line))?;
                 let true_ident = registry.get("true".to_string()); 
                 if let Some(t) = scope.get(&true_ident) {
                     (expr == t)
                         .then_some(())
-                        .ok_or_else(|| Error::AssertionFailed(expr, t, exp))
+                        .ok_or_else(|| Error::AssertionFailed(expr, t, exp).with_location(path, line))
                 }
                 else {
-                    Err(Error::UnboundVariable(true_ident))
+                    Err(Error::UnboundVariable(true_ident).with_location(path, line))
                 }
             }
         }
     }
 }
+
+impl WithLocation for Stmt {}
 
 fn main() {
     let mut args = std::env::args();
@@ -156,20 +166,34 @@ fn main() {
     let mut registry = Registry::default();
     let mut scope = Scope::default();
     let mut includes = HashSet::new();
+    let includes_ptr = &mut includes as *mut HashSet<PathBuf>;
 
     let mut stmts = Vec::new();
     for arg in args.into_iter() {
         let mut path = PathBuf::from(arg);
-        std::fs::canonicalize(&mut path).expect("path error");
+        if let Err(err) = std::fs::canonicalize(&mut path) {
+            eprintln!("error: could not get full path of `{}`: {err}", path.into_os_string().into_string().unwrap());
+            std::process::exit(1);
+        }
 
-        stmts.extend(
-            Stmt::parse_all(path, &mut registry, &mut includes)
-                .expect("parse error")
-        )
+        match Stmt::parse_all(path, &mut registry, unsafe { includes_ptr.as_mut().unwrap() }) {
+            Ok(new) => stmts.extend(new),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
     }
 
+    let mut errored = false;
     for stmt in stmts {
-        stmt.eval(&mut registry, &mut scope, &mut includes)
-            .expect("runtime error");
+        if let Err(err) = Stmt::eval(stmt, &mut registry, &mut scope, unsafe {includes_ptr.as_mut().unwrap() }) {
+            eprintln!("{err}");
+            errored = true;
+        }
+    }
+
+    if errored {
+        std::process::exit(1);
     }
 }
