@@ -73,20 +73,23 @@ pub trait WithLocation: Sized {
 
 #[derive(PartialEq, Eq, Debug, Default, Clone)]
 pub enum Token {
+    Assert,
+    Assign,
+    Comma,
+    Dot,
     Identifier(String),
-    String(String),
-    Number(u32),
     Include,
     Lambda,
-    Let,
-    Assert,
-    Primitive,
-    Assign,
-    Dot,
-    Comma,
-    Semicolon,
+    LeftBracket,
     LeftParen,
+    Let,
+    Number(u32),
+    Primitive,
+    Print,
+    RightBracket,
     RightParen,
+    Semicolon,
+    String(String),
     Unknown(char),
 
     #[default]
@@ -96,10 +99,11 @@ pub enum Token {
 thread_local! {
     pub static KEYWORDS: HashMap<&'static str, Token> = HashMap::from([
             ("=", Token::Assign),
-            ("let", Token::Let),
-            ("include", Token::Include),
-            ("primitive", Token::Primitive),
             ("assert", Token::Assert),
+            ("include", Token::Include),
+            ("let", Token::Let),
+            ("primitive", Token::Primitive),
+            ("print", Token::Print),
         ]);
 }
 
@@ -124,6 +128,8 @@ impl Token {
             ';' => Self::Semicolon,
             '(' => Self::LeftParen,
             ')' => Self::RightParen,
+            '[' => Self::LeftBracket,
+            ']' => Self::RightBracket,
             '\0' => Self::Eof, 
             '\'' => Self::String(input.take_while(|ch| *ch != '\'').collect()),
             '\"' => Self::String(input.take_while(|ch| *ch != '\"').collect()),
@@ -162,7 +168,7 @@ impl Token {
     }
 
     pub fn starts_expr(&self) -> bool {
-        matches!(self, Self::Lambda | Self::Identifier(_) | Self::LeftParen | Self::Number(_))
+        matches!(self, Self::Lambda | Self::Identifier(_) | Self::LeftParen | Self::LeftBracket | Self::Number(_))
     }
 }
 
@@ -177,10 +183,13 @@ impl std::fmt::Display for Token {
             Self::Identifier(ident) => write!(f, "{ident}"),
             Self::Include => write!(f, "include"),
             Self::Lambda => write!(f, "λ"),
+            Self::LeftBracket => write!(f, "["),
             Self::LeftParen => write!(f, "("),
             Self::Let => write!(f, "let"),
             Self::Number(num) => write!(f, "{num}"),
             Self::Primitive => write!(f, "primitive"),
+            Self::Print => write!(f, "print"),
+            Self::RightBracket => write!(f, "]"),
             Self::RightParen => write!(f, ")"),
             Self::Semicolon => write!(f, ";"),
             Self::String(string) => write!(f, "\"{string}\""),
@@ -220,6 +229,7 @@ impl<'a> Parser<'a> {
             Token::Let => self.parse_let_binding(registry)?,
             Token::Include => self.parse_include()?,
             Token::Assert => self.parse_assertion(registry)?,
+            Token::Print => self.parse_print(registry)?,
             _ => {
                 let tok = self.next().unwrap();
                 let line = tok.line();
@@ -303,6 +313,21 @@ impl<'a> Parser<'a> {
         Ok(Stmt::LetBinding(registry.get(ident), Binding(expr, primitive)))
     }
 
+    fn parse_list(&mut self, registry: &mut Registry) -> Result<Expr, Located<'a, Error>> {
+        let pair = registry.get("list".to_string());
+        let nil = registry.get("nil".to_string());
+
+        let mut list = Expr::Variable(nil);
+        while let Some(next) = self.peek() && next.as_ref() != &Token::RightBracket {
+            let ent = self.parse_basic_expr(registry)?;
+            list = Expr::Application(Box::new(Expr::Application(Box::new(Expr::Variable(pair)), Box::new(ent))), Box::new(list));
+        }
+
+        self.expect(Token::RightBracket)?;
+
+        Ok(list)
+    }
+
     fn parse_basic_expr(&mut self, registry: &mut Registry) -> Result<Expr, Located<'a, Error>> {
         let tok = self.next().unwrap_or_default();
         let line = tok.line();
@@ -320,6 +345,7 @@ impl<'a> Parser<'a> {
                 self.expect(Token::RightParen)?;
                 Ok(expr)
             }
+            Token::LeftBracket => self.parse_list(registry),
             Token::Eof => Err(Error::UnexpectedEof.with_location(self.origin_path, line)),
             tok => Err(Error::UnexpectedToken(tok, "expression".to_string()).with_location(self.origin_path, line))
         }
@@ -370,6 +396,11 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Stmt::Assertion(expr, exp))
+    }
+
+    fn parse_print(&mut self, registry: &mut Registry) -> Result<Stmt, Located<'a, Error>> {
+        self.expect(Token::Print)?;
+        self.parse_expr(registry).map(Stmt::Print)
     }
 }
 

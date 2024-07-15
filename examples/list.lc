@@ -1,2 +1,4 @@
 include "../prelude.lc";
 
+print [true false true];
+print true;

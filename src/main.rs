@@ -81,31 +81,51 @@ impl Expr {
         matches!(self, Self::Application(_, _))
     }
 
-    fn to_string(&self, registry: &Registry) -> String {
-        match self {
-            Self::Variable(ident) => registry.get_name(ident).unwrap().clone(),
-            Self::Function(arg, body) => format!("λ{}.{}", registry.get_name(arg).unwrap(), body.to_string(registry)),
-            Self::Application(left, right) if right.is_application() =>
-                format!("{} ({})", left.to_string(registry), right.to_string(registry)),
-            Self::Application(left, right) =>
-                format!("{} {}", left.to_string(registry), right.to_string(registry))
-        }
-    }
+    fn to_string(&self, scope: &Scope, registry: &Registry) -> String {
+        let mut string = String::new();
 
-    fn pretty_to_string(&self, scope: &Scope, registry: &Registry) -> String {
-        if let Some((id, _)) = scope.bindings().iter().filter(|(_, b)| b.1).find(|(_, b)| &b.0 == self) {
-            registry.get_name(id).unwrap().clone()
+        fn to_string(expr: &Expr, string: &mut String, scope: &Scope, registry: &Registry) {
+            if let Some((id, _)) = scope.bindings().iter().filter(|(_, b)| b.1).find(|(_, b)| &b.0 == expr) {
+                string.push_str(registry.get_name(id).unwrap());       
+                return;
+            }
+
+            match expr {
+                Expr::Variable(ref ident) => string.push_str(registry.get_name(ident).unwrap()),
+                Expr::Function(ref arg, body) => {
+                    string.push('λ');
+                    string.push_str(registry.get_name(arg).unwrap());
+                    string.push('.');
+                    to_string(body, string, scope, registry);
+                }
+                Expr::Application(left, right) => {
+                    to_string(left, string, scope, registry);
+
+                    string.push(' ');
+                    if right.is_application() {
+                        string.push('(');
+                    }
+                    to_string(right, string, scope, registry);
+                    if right.is_application() {
+                        string.push(')');
+                    }
+                }
+            }
         }
-        else {
-            self.to_string(registry)
-        }
+
+        to_string(self, &mut string, scope, registry);
+
+        string
     }
 }
+
+impl WithLocation for Expr {}
 
 enum Stmt {
     Include(PathBuf),
     LetBinding(Identifier, Binding),
-    Assertion(Expr, Option<String>)
+    Assertion(Expr, Option<String>),
+    Print(Expr),
 }
 
 impl Stmt {
@@ -158,11 +178,24 @@ impl Stmt {
                     Err(Error::UnboundVariable(true_ident).with_location(path, line))
                 }
             }
+            Self::Print(expr) => {
+                let expr = scope.substitute(expr)
+                    .beta_reduce()
+                    .map_err(|err| err.with_location(path, line))?;
+                
+                print_expr(expr.with_location(path, line), scope, registry);
+                Ok(())
+            }
         }
     }
 }
 
 impl WithLocation for Stmt {}
+
+fn print_expr(expr: Located<'_, Expr>, scope: &Scope, registry: &Registry) {
+    let path = expr.path().map(|p| p.to_str()).flatten().unwrap_or("repl");
+    println!("{}:{}: {}", path, expr.line(), expr.as_ref().to_string(scope, registry))
+} 
 
 fn error(err: String) -> ! {
     eprintln!("{}{err}{}", ansi::RED, ansi::RESET); 

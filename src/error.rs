@@ -17,8 +17,8 @@ impl Error {
             Self::UnboundVariable(ident) => format!("variable `{}` is undefined.", registry.get_name(ident).unwrap()),
             Self::AssertionFailed(got, exp, msg) => {
                 let mut string = format!("assertion failed: {} != {}",
-                    exp.pretty_to_string(scope, registry),
-                    got.pretty_to_string(scope, registry)
+                    exp.to_string(scope, registry),
+                    got.to_string(scope, registry)
                 );
                 if let Some(msg) = msg {
                     string.push_str(&format!(": {msg}"));
