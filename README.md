@@ -20,9 +20,14 @@ Additional expressions:
 
 ## Statements
 
+- **`include "file.lc";`**: File include; Adds the file `file.lc` to the current context.
 - **`let x = y;`**: Let-bindings; All occurances of `x` get substituted with `y` before the reduction process.
 - **`print x;`**: Print statement; Reduces `x` and prints it.
 - **`assert x, "<message>";`**: Assert statement; Reduces `x` and checks it against `true` (see `prelude.lc`). If the expression does not match, execution fails with the message `<message>`.
+
+## Standard Library
+
+> Core functions can be found in the [prelude.lc](./prelude.lc) file.
 
 ## License
 
