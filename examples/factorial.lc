@@ -3,5 +3,6 @@ include "../prelude.lc";
 let H = (λf.λn.(isZero n) 1 (mult n (f (pred n))));
 let factorial = Y H;
 
-assert leq (factorial 4) 24;
+-- factorial(4) == 24
+assert eq (factorial 4) 24;
 

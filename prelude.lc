@@ -1,6 +1,10 @@
+-- standard library
+
+-- boolean primitives
 let(primitive) true = λx.λy.x;
 let(primitive) false = λx.λy.y;
 
+-- boolean operators
 let and = λp.λq.p q p;
 let or = λp.λq.p p q;
 
@@ -9,6 +13,7 @@ let not = λp.p false true;
 let ifThenElse = λp.λa.λb.p a b;
 let isZero = λn.n (λx.false) true;
 
+-- pairs and lists
 let pair = λx.λy.λf.f x y;
 let list = pair;
 
@@ -18,16 +23,34 @@ let second = λp.p false;
 let nil = λx.true;
 let null = λp.p (λx.λy.false);
 
+-- numerals
 let succ = λn.λf.λx.f (n f x);
 let pred = λn.λf.λx.n (λg.λh.h (g f)) (λu.x) (λu.u);
 
+-- operators
 let plus = λm.λn.λf.λx.m f (n f x);
 let sub = λm.λn.n pred m;
 let mult = λm.λn.λf.m (n f);
+
+let div = λn.λd.Y (λr.λq.(lt q d) 0 (succ (r (sub q d)))) n;
+let mod = λn.λd.(sub n (mult d (div n d)));
+
 let pow = λb.λe.e b;
 
+-- comparison
+let eq  = λm.λn.and (leq m n) (leq n m);
+let lt  = λm.λn.leq (succ m) n;
 let leq = λm.λn.isZero (sub m n);
+let gt  = λm.λn.not (leq m n);
+let geq = λm.λn.leq n m;
 
+let min = λm.λn.(lt m n) m n;
+let max = λm.λn.(lt m n) n m;
+
+let even = λn.n not true;
+let odd = λn.n not false;
+
+-- combinators
 let I = λx.x;
 let S = λx.λy.λz.x z (y z);
 let K = λx.λy.x;

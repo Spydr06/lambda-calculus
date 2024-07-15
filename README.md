@@ -3,6 +3,20 @@
 This is an unnamed **esoteric programming language** implemented as a preprocessor to raw, untyped *(subject to change)* **Lambda Calculus** 
 implemented in Rust without any 3rd-party libraries.
 
+## Examples
+
+Examples can be found in the [examples](./examples) directory. They can be executed using:
+
+```
+$ cargo run -- ./examples/<example>.lc
+```
+
+or, with the executable directly:
+
+```
+$ /path/to/lambda-calculus ./examples/<example>.lc
+```
+
 ## Expressions
 
 Base expressions of lambda calculus:

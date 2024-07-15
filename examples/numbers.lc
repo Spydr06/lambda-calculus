@@ -1,0 +1,19 @@
+include "../prelude.lc";
+
+assert isZero 0;
+assert not (isZero 1);
+
+assert eq 10 10, "10 = 10";
+
+assert gt 10 5, "10 > 5";
+assert lt 5 10, "5 < 10";
+
+assert even 4;
+assert odd 3;
+assert not (even 7);
+assert not (odd 32);
+
+assert eq (min 5 1) 1;
+assert eq (max 10 3) 10;
+
+assert eq (div 15 5) 3;

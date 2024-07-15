@@ -153,6 +153,15 @@ impl Token {
                     input.next();
                 }
 
+                // comments
+                if ident.starts_with("--") {
+                    while let Some(&ch) = input.peek() && ch != '\n' {
+                        input.next();
+                    }
+
+                    return Self::next(input, line);
+                }
+
                 KEYWORDS.with(|map| map.get(ident.as_str()).cloned())
                         .unwrap_or_else(|| Self::Identifier(ident))
             }
