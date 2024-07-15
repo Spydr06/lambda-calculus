@@ -10,22 +10,27 @@ pub enum Error {
     UnexpectedEof,
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Error {
+    pub fn to_string(&self, scope: &Scope, registry: &Registry) -> String {
         match self {
-            Self::Redefinition(binding) => write!(f, "redefinition of binding `{binding}`."),
-            Self::UnboundVariable(ident) => write!(f, "variable `{ident}` is undefined."),
+            Self::Redefinition(binding) => format!("redefinition of binding `{binding}`."),
+            Self::UnboundVariable(ident) => format!("variable `{}` is undefined.", registry.get_name(ident).unwrap()),
             Self::AssertionFailed(got, exp, msg) => {
-                write!(f, "assertion failed: {got:?} != {exp:?}")?;
+                let mut string = format!("assertion failed: {} != {}",
+                    exp.pretty_to_string(scope, registry),
+                    got.pretty_to_string(scope, registry)
+                );
                 if let Some(msg) = msg {
-                    write!(f, ": {msg}")?;
+                    string.push_str(&format!(": {msg}"));
                 }
-                write!(f, ".")
+                string.push('.');
+                string
             }
-            Self::IncludedFile(err) => write!(f, "including file: {err}."),
-            Self::UnexpectedToken(tok, exp) => write!(f, "unexpected token `{tok}`: expected {exp}."),
-            Self::UnexpectedEof => write!(f, "unexpected end of file.")
+            Self::IncludedFile(err) => format!("including file: {err}."),
+            Self::UnexpectedToken(tok, exp) => format!("unexpected token `{tok}`: expected {exp}."),
+            Self::UnexpectedEof => format!("unexpected end of file.")
         }
+
     }
 }
 
@@ -43,12 +48,18 @@ impl From<std::io::Error> for Error {
 
 impl WithLocation for Error {}
 
-impl std::fmt::Display for Located<'_, Error> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Located<'_, Error> {
+    pub fn to_string(&self, scope: &Scope, registry: &Registry) -> String { 
         let path = self.path();
         let line = self.line();
-        let err = self.as_ref();
+        let err = self.as_ref().to_string(scope, registry);
 
-        write!(f, "{}:{line}: {err}", path.map(|p| p.to_str()).flatten().unwrap_or("repl"))
+        let path = path.map(|p| p.to_str()).flatten().unwrap_or("repl");
+        if line > 0 {
+            format!("{path}:{line}: {err}")
+        }
+        else {
+            format!("{path}: {err}")
+        }
     }
 }

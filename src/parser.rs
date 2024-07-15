@@ -27,14 +27,6 @@ impl<T> Lined<T> {
     pub fn as_ref(&self) -> &T {
         &self.inner
     }
-
-    pub fn into_located(self, path: Option<&PathBuf>) -> Located<T> {
-        Located {
-            inner: self.inner,
-            path,
-            line: self.line
-        }
-    }
 }
 
 impl<T> Deref for Lined<T> {

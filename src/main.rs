@@ -8,11 +8,16 @@ mod error;
 mod parser;
 mod scope;
 
-use std::{collections::{hash_map, HashSet}, fmt, fs::File, io::Read, path::PathBuf};
+use std::{collections::{hash_map, HashSet}, fs::File, io::Read, path::PathBuf};
 
 use error::*;
 use parser::*;
 use scope::*;
+
+mod ansi {
+    pub const RESET: &str = "\x1b[0m";
+    pub const RED: &str = "\x1b[31m";
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Expr {
@@ -159,6 +164,11 @@ impl Stmt {
 
 impl WithLocation for Stmt {}
 
+fn error(err: String) -> ! {
+    eprintln!("{}{err}{}", ansi::RED, ansi::RESET); 
+    std::process::exit(1);
+}
+
 fn main() {
     let mut args = std::env::args();
     args.next();
@@ -172,28 +182,18 @@ fn main() {
     for arg in args.into_iter() {
         let mut path = PathBuf::from(arg);
         if let Err(err) = std::fs::canonicalize(&mut path) {
-            eprintln!("error: could not get full path of `{}`: {err}", path.into_os_string().into_string().unwrap());
-            std::process::exit(1);
+            error(format!("error: could not get full path of `{}`: {err}", path.into_os_string().into_string().unwrap()));
         }
 
         match Stmt::parse_all(path, &mut registry, unsafe { includes_ptr.as_mut().unwrap() }) {
             Ok(new) => stmts.extend(new),
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
+            Err(err) => error(err.to_string(&scope, &registry))
         }
     }
 
-    let mut errored = false;
     for stmt in stmts {
         if let Err(err) = Stmt::eval(stmt, &mut registry, &mut scope, unsafe {includes_ptr.as_mut().unwrap() }) {
-            eprintln!("{err}");
-            errored = true;
+            error(err.to_string(&scope, &registry));
         }
-    }
-
-    if errored {
-        std::process::exit(1);
     }
 }
